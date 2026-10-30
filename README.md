@@ -1,3 +1,15 @@
+## Actualización: sucursales ligeras e IA central
+
+Consulta [SEDE_CENTRAL.md](SEDE_CENTRAL.md) para actualizar el agente conservando sus credenciales.
+
+- **Iniciar-agente.cmd**: agente con latido independiente cada 5 segundos; desconexión tras 20 segundos sin comunicación, más el refresco de pantalla.
+- **Solicitar-ayuda.cmd**: ventana para pedir ayuda a los especialistas de la sede, sin instalar Ollama ni modelos en la sucursal. Incluye una prueba de ida y vuelta sin IA.
+- La sede procesa texto por áreas: soporte, red, contabilidad y proyectos. Las solicitudes y resultados aparecen en Corporaciones. Todavía no ejecuta cambios de red ni operaciones contables.
+
+Validado con pruebas automatizadas y procesos Windows separados, incluida una respuesta real del modelo central. La prueba en tu VM se realiza después de actualizarla.
+
+---
+
 ## Instalación sencilla con ventana (recomendada)
 
 1. En la VM, conecta Tailscale e instala Python 3.12 o posterior con Tcl/Tk y la opción Add Python to PATH.
