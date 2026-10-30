@@ -1,3 +1,12 @@
+## Control de energía desde Telegram
+
+- [APAGADO_TELEGRAM.md](APAGADO_TELEGRAM.md): actualización, permiso local y comandos `/equipos`, `/apagar EmpresaX` o `/tarea apagar el equipo de EmpresaX`, siempre con confirmación del propietario.
+- [CONTROL_DE_SUCURSALES.md](CONTROL_DE_SUCURSALES.md): diseño de los próximos módulos de red, instalación de aplicaciones y servicios, y agentes locales. Los escáneres e instaladores todavía no están implementados.
+
+El apagado es una operación fija de Windows habilitada expresamente en cada equipo. No acepta shell ni comandos arbitrarios, no fuerza el cierre de aplicaciones y no se reintenta automáticamente. Para habilitarlo, utiliza **Permisos-equipo.cmd** en la VM y reinicia su agente.
+
+---
+
 ## Actualización: sucursales ligeras e IA central
 
 Consulta [SEDE_CENTRAL.md](SEDE_CENTRAL.md) para actualizar el agente conservando sus credenciales.
