@@ -9,6 +9,7 @@ import platform
 import ssl
 import sys
 import time
+import threading
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
@@ -52,17 +53,35 @@ def metrics(allow_compute=False):
     return result
 
 class API:
-    def __init__(self,url,credential='',allow_local_http=False):
+    def __init__(self,url,credential='',allow_local_http=False,timeout=35):
         parts=urlsplit(url)
         if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ['', '/']:raise ValueError('Usa la dirección base del gateway, sin credenciales, rutas ni parámetros.')
         local=parts.scheme=='http' and parts.hostname in ['127.0.0.1','localhost'] and allow_local_http
         if not (parts.scheme=='https' and parts.hostname) and not local:raise ValueError('La sede debe usar HTTPS válido. HTTP solo está permitido para una prueba local explícita.')
-        self.url=url.rstrip('/');self.credential=credential
+        self.url=url.rstrip('/');self.credential=credential;self.timeout=timeout
         self.opener=build_opener(ProxyHandler({}),HTTPSHandler(context=ssl.create_default_context()))
     def __call__(self,path,body=None):
         data=json.dumps(body or {}).encode()
         req=Request(self.url+'/agent-api/v1'+path,data=data,headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+self.credential} if self.credential else {})},method='POST')
-        with self.opener.open(req,timeout=35) as response:return json.load(response)
+        with self.opener.open(req,timeout=self.timeout) as response:return json.load(response)
+
+class HeartbeatPump:
+    """Independent of long model calls and Windows notices; no shared HTTP opener."""
+    def __init__(self,api,allow_local_http=False,allow_compute=False):
+        self.api=API(api.url,api.credential,allow_local_http,timeout=4)
+        self.stop=threading.Event();self.revoked=threading.Event();self.allow_compute=allow_compute
+    def loop(self):
+        while not self.stop.is_set():
+            started=time.monotonic()
+            try:self.api('/heartbeat',metrics(self.allow_compute)|{'heartbeat_seconds':5})
+            except HTTPError as exc:
+                if exc.code in [401,403]:self.revoked.set();return
+            except Exception:pass
+            self.stop.wait(max(.1,5-(time.monotonic()-started)))
+    def __enter__(self):
+        self.thread=threading.Thread(target=self.loop,daemon=True);self.thread.start();return self
+    def __exit__(self,*args):
+        self.stop.set();self.thread.join(timeout=5)
 
 class Worker:
     def __init__(self,api,allow_compute=False,allowed_models=None):
@@ -106,37 +125,39 @@ def run(config_path,once=False):
         save_json(config_path,config);api.credential=enrolled['token'];print('Equipo vinculado a la corporación.',flush=True)
     worker=Worker(api,config.get('allow_compute',False),config.get('allowed_models',['qwen3:8b']))
     spool=config_path.with_name('pending-result.dpapi')
-    while True:
-        success=True
-        try:
-            heartbeat=api('/heartbeat',metrics(worker.allow_compute))
-            if spool.exists():
-                pending=json.loads(protect(spool.read_bytes(),False).decode())
-                try:api('/jobs/'+str(pending['job_id'])+'/result',pending['body']);spool.unlink()
-                except HTTPError as exc:
-                    if exc.code==409:
-                        spool.replace(spool.with_name('undelivered-'+str(time.time_ns())+'.dpapi'))
-                        print('Resultado fuera de plazo conservado cifrado para revisión.',flush=True)
-                    else:raise
-            if not spool.exists():
-                leased=api('/lease')
-                if leased.get('job'):
-                    job=leased['job'];body=worker.run_job(job)
-                    temp=spool.with_suffix('.tmp');temp.write_bytes(protect(json.dumps({'job_id':job['id'],'body':body}).encode()));temp.replace(spool)
-                    api('/jobs/'+str(job['id'])+'/result',body);spool.unlink()
-                    print('Trabajo R-'+str(job['id'])+' reportado: '+('DONE' if body['ok'] else 'ERROR'),flush=True)
-                else:print('Equipo conectado; corporación '+heartbeat['corporation_status']+'. Sin trabajo.',flush=True)
-        except HTTPError as exc:
-            success=False
-            print('La sede rechazó la operación: HTTP '+str(exc.code),flush=True)
-            if exc.code in [401,403]:raise SystemExit('Credencial revocada o no válida. Requiere intervención del propietario.') from None
-        except Exception:
-            success=False
-            print('Sede temporalmente no disponible; se conserva el resultado pendiente.',flush=True)
-        if once:
-            if not success:raise SystemExit(2)
-            return
-        time.sleep(max(15,min(300,int(config.get('poll_seconds',30)))))
+    with HeartbeatPump(api,config.get('allow_local_http',False),worker.allow_compute) as pump:
+        while True:
+            if pump.revoked.is_set():raise SystemExit('Credencial revocada. Agente detenido.')
+            success=True
+            try:
+                heartbeat=api('/heartbeat',metrics(worker.allow_compute)|{'heartbeat_seconds':5})
+                if spool.exists():
+                    pending=json.loads(protect(spool.read_bytes(),False).decode())
+                    try:api('/jobs/'+str(pending['job_id'])+'/result',pending['body']);spool.unlink()
+                    except HTTPError as exc:
+                        if exc.code==409:
+                            spool.replace(spool.with_name('undelivered-'+str(time.time_ns())+'.dpapi'))
+                            print('Resultado fuera de plazo conservado cifrado para revisión.',flush=True)
+                        else:raise
+                if not spool.exists():
+                    leased=api('/lease')
+                    if leased.get('job'):
+                        job=leased['job'];body=worker.run_job(job)
+                        temp=spool.with_suffix('.tmp');temp.write_bytes(protect(json.dumps({'job_id':job['id'],'body':body}).encode()));temp.replace(spool)
+                        api('/jobs/'+str(job['id'])+'/result',body);spool.unlink()
+                        print('Trabajo R-'+str(job['id'])+' reportado: '+('DONE' if body['ok'] else 'ERROR'),flush=True)
+                    else:print('Equipo conectado; corporación '+heartbeat['corporation_status']+'. Sin trabajo.',flush=True)
+            except HTTPError as exc:
+                success=False
+                print('La sede rechazó la operación: HTTP '+str(exc.code),flush=True)
+                if exc.code in [401,403]:raise SystemExit('Credencial revocada o no válida. Requiere intervención del propietario.') from None
+            except Exception:
+                success=False
+                print('Sede temporalmente no disponible; se conserva el resultado pendiente.',flush=True)
+            if once:
+                if not success:raise SystemExit(2)
+                return
+            time.sleep(max(15,min(300,int(config.get('poll_seconds',30)))))
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,required=True);parser.add_argument('--once',action='store_true')

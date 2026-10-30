@@ -3,3 +3,6 @@ config.json
 *.dpapi
 *.log
 *.tmp
+
+central-pending.json
+central-last-result.json
