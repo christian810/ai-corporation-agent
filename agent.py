@@ -10,6 +10,7 @@ import ssl
 import sys
 import time
 import threading
+import subprocess
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
@@ -65,15 +66,36 @@ class API:
         req=Request(self.url+'/agent-api/v1'+path,data=data,headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+self.credential} if self.credential else {})},method='POST')
         with self.opener.open(req,timeout=self.timeout) as response:return json.load(response)
 
+def shutdown_windows():
+    if os.name!='nt':raise ValueError('El apagado requiere Windows.')
+    executable=str(Path(os.environ.get('SystemRoot',r'C:\Windows'))/'System32'/'shutdown.exe')
+    completed=subprocess.run([executable,'/s','/t','0'],shell=False,capture_output=True,timeout=10,
+                             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    if completed.returncode:raise ValueError('Windows no aceptó el apagado. Comprueba los permisos del usuario.')
+
+def commit_shutdown(api,job,config_path):
+    marker=config_path.with_name('power-consumed.json')
+    consumed=json.loads(marker.read_text(encoding='utf-8')) if marker.exists() else []
+    if job['id'] in consumed:raise ValueError('La orden de apagado ya se consumió; no se repite.')
+    api('/jobs/'+str(job['id'])+'/power-commit',{'lease':job['lease']})
+    try:
+        # Record before asking Windows. Interrupted power actions are never replayed.
+        save_json(marker,(consumed+[job['id']])[-200:])
+        shutdown_windows()
+    except Exception:
+        try:api('/jobs/'+str(job['id'])+'/power-failed',{'lease':job['lease']})
+        except Exception:pass
+        raise
+
 class HeartbeatPump:
     """Independent of long model calls and Windows notices; no shared HTTP opener."""
-    def __init__(self,api,allow_local_http=False,allow_compute=False):
+    def __init__(self,api,allow_local_http=False,allow_compute=False,allow_shutdown=False):
         self.api=API(api.url,api.credential,allow_local_http,timeout=4)
-        self.stop=threading.Event();self.revoked=threading.Event();self.allow_compute=allow_compute
+        self.stop=threading.Event();self.revoked=threading.Event();self.allow_compute=allow_compute;self.allow_shutdown=allow_shutdown
     def loop(self):
         while not self.stop.is_set():
             started=time.monotonic()
-            try:self.api('/heartbeat',metrics(self.allow_compute)|{'heartbeat_seconds':5})
+            try:self.api('/heartbeat',metrics(self.allow_compute)|{'heartbeat_seconds':5,'allow_shutdown':self.allow_shutdown})
             except HTTPError as exc:
                 if exc.code in [401,403]:self.revoked.set();return
             except Exception:pass
@@ -84,13 +106,16 @@ class HeartbeatPump:
         self.stop.set();self.thread.join(timeout=5)
 
 class Worker:
-    def __init__(self,api,allow_compute=False,allowed_models=None):
-        self.api=api;self.allow_compute=allow_compute;self.allowed_models=allowed_models or ['qwen3:8b']
+    def __init__(self,api,allow_compute=False,allowed_models=None,allow_shutdown=False):
+        self.api=api;self.allow_compute=allow_compute;self.allowed_models=allowed_models or ['qwen3:8b'];self.allow_shutdown=allow_shutdown
     def execute(self,job):
         kind=job['kind']
         if kind=='echo':return 'Conexión y ejecución de prueba correctas. Sin inferencia de IA.'
         if kind=='desktop_notice':return desktop_notice(job.get('prompt',''))
         if kind=='inventory':return json.dumps(metrics(self.allow_compute),ensure_ascii=False)
+        if kind=='shutdown':
+            if not self.allow_shutdown:raise ValueError('El apagado remoto está deshabilitado en este equipo.')
+            return 'Orden de apagado recibida. Pendiente de autorización final y solicitud a Windows; no confirma apagado físico.'
         if kind!='generate':raise ValueError('Tipo de trabajo no permitido.')
         if not self.allow_compute:raise ValueError('La inferencia local está desactivada en este equipo.')
         model=job['profile']['model']
@@ -123,14 +148,14 @@ def run(config_path,once=False):
         enrolled=api('/enroll',{'key':credential,'label':config['label'],'version':VERSION})
         config['credential_protected']=protect(enrolled['token'].encode()).hex();config['enrolled']=True;config['node_id']=enrolled['node_id']
         save_json(config_path,config);api.credential=enrolled['token'];print('Equipo vinculado a la corporación.',flush=True)
-    worker=Worker(api,config.get('allow_compute',False),config.get('allowed_models',['qwen3:8b']))
+    worker=Worker(api,config.get('allow_compute',False),config.get('allowed_models',['qwen3:8b']),config.get('allow_shutdown',False))
     spool=config_path.with_name('pending-result.dpapi')
-    with HeartbeatPump(api,config.get('allow_local_http',False),worker.allow_compute) as pump:
+    with HeartbeatPump(api,config.get('allow_local_http',False),worker.allow_compute,worker.allow_shutdown) as pump:
         while True:
             if pump.revoked.is_set():raise SystemExit('Credencial revocada. Agente detenido.')
             success=True
             try:
-                heartbeat=api('/heartbeat',metrics(worker.allow_compute)|{'heartbeat_seconds':5})
+                heartbeat=api('/heartbeat',metrics(worker.allow_compute)|{'heartbeat_seconds':5,'allow_shutdown':worker.allow_shutdown})
                 if spool.exists():
                     pending=json.loads(protect(spool.read_bytes(),False).decode())
                     try:api('/jobs/'+str(pending['job_id'])+'/result',pending['body']);spool.unlink()
@@ -146,6 +171,7 @@ def run(config_path,once=False):
                         temp=spool.with_suffix('.tmp');temp.write_bytes(protect(json.dumps({'job_id':job['id'],'body':body}).encode()));temp.replace(spool)
                         api('/jobs/'+str(job['id'])+'/result',body);spool.unlink()
                         print('Trabajo R-'+str(job['id'])+' reportado: '+('DONE' if body['ok'] else 'ERROR'),flush=True)
+                        if job['kind']=='shutdown' and body['ok']:commit_shutdown(api,job,config_path)
                     else:print('Equipo conectado; corporación '+heartbeat['corporation_status']+'. Sin trabajo.',flush=True)
             except HTTPError as exc:
                 success=False

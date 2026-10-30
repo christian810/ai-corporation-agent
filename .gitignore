@@ -6,3 +6,5 @@ config.json
 
 central-pending.json
 central-last-result.json
+
+power-consumed.json
