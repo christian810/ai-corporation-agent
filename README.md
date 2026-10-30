@@ -74,3 +74,33 @@ La ruta correcta termina en `Agent\config.json`, con una barra entre la carpeta 
 Si aparece «Equipo vinculado a la corporación», el alta se ha completado. Una corporación `INACTIVE` puede conectarse, pero no recibe trabajos hasta que su propietario la active en la sede. Con `--once`, el proceso termina después de una consulta: es normal.
 
 Si falla, comprueba que Tailscale esté conectado **también en la VM** y abre la dirección del gateway seguida de `/health` (puerto HTTPS 8443). Debe responder con `corporation-agent-gateway`. Comparte solo el mensaje de error: nunca claves, tokens ni el contenido de `config.json`.
+
+
+## Comprobar el JSON y la clave cifrada
+
+El campo `credential_protected` contiene una credencial cifrada por el instalador con DPAPI de Windows. **No pegues una clave sin cifrar en ese campo ni copies el JSON desde otro equipo o usuario.** Debe leerse con el mismo usuario y equipo Windows donde se instaló.
+
+Ejecuta este bloque en PowerShell de la VM. Solo muestra comprobaciones; no imprime la credencial:
+
+```powershell
+$carpeta = Join-Path $env:LOCALAPPDATA 'AI Corporation Agent'
+try {
+    $c = Get-Content "$carpeta\config.json" -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    "JSON correcto: Sí"
+    "Alta completada: $($c.enrolled)"
+    "Tiene credencial: $(-not [string]::IsNullOrWhiteSpace($c.credential_protected))"
+    "Parece cifrada por Windows: $([string]$c.credential_protected -match '^01000000d08c9ddf')"
+} catch {
+    "No se encuentra el archivo o el JSON no es válido."
+}
+```
+
+Interpretación:
+
+- `JSON correcto: Sí`: el archivo se ha podido leer y analizar. No confirma que todos sus campos sean correctos.
+- `Alta completada: False`: el agente todavía necesita completar el alta con la sede. No demuestra por sí solo un error.
+- `Tiene credencial: False`: falta la credencial o está vacía.
+- `Parece cifrada por Windows: False`: el contenido no tiene el encabezado esperado; puede haberse editado o pegado la clave sin cifrar.
+- `Parece cifrada por Windows: True`: solo comprueba el formato inicial. No prueba que se pueda descifrar, que sea válida o que siga vigente.
+
+La clave inicial de alta caduca en **15 minutos** y solo se puede usar una vez. Después del alta se sustituye por la credencial del equipo; esta no tiene ese plazo de 15 minutos. No borres ni sustituyas el JSON antes de revisar el estado. Comparte únicamente las respuestas de esta comprobación, nunca el archivo, claves o tokens.
