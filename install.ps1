@@ -13,13 +13,17 @@ if (!$pythonCommand) { throw 'Instala Python 3.12 o posterior desde python.org a
 if ($LASTEXITCODE -ne 0) { throw 'Se requiere Python 3.12 o posterior.' }
 $parsedUrl=[Uri]$CentralUrl
 if ($parsedUrl.Scheme -ne 'https' -or $parsedUrl.UserInfo -or $parsedUrl.Query -or $parsedUrl.Fragment -or $parsedUrl.AbsolutePath -ne '/') { throw 'Usa la dirección HTTPS base del gateway, sin rutas ni credenciales.' }
+try {
+    $health=Invoke-RestMethod ($CentralUrl.TrimEnd('/')+'/health') -TimeoutSec 15
+    if ($health.service -ne 'corporation-agent-gateway' -or $health.protocol -ne 1) { throw 'La direccion no es el gateway de agentes.' }
+} catch { throw 'No se puede verificar el gateway HTTPS. Comprueba Tailscale en esta VM y ejecuta diagnose.ps1 antes de introducir una clave.' }
 $installRoot=Join-Path $env:LOCALAPPDATA 'AI Corporation Agent'
 New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 $configPath=Join-Path $installRoot 'config.json'
 if (Test-Path -LiteralPath $configPath) { throw 'Ya existe una instalación. Conserva su configuración; no se sobrescribe la credencial.' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'agent.py') -Destination (Join-Path $installRoot 'agent.py')
 $bootstrap=Read-Host 'Clave de alta de un solo uso (no el token de Telegram)' -AsSecureString
-$config=@{central_url=$CentralUrl.TrimEnd('/');label=$Label;credential_protected=$protected;enrolled=$false;allow_compute=[bool]$AllowCompute;allowed_models=@('qwen3:8b');poll_seconds=30}
+$config=@{central_url=$CentralUrl.TrimEnd('/');label=$Label;credential_protected='';enrolled=$false;allow_compute=[bool]$AllowCompute;allowed_models=@('qwen3:8b');poll_seconds=30}
 # ConvertFrom-SecureString uses Windows DPAPI but its envelope differs from raw CryptProtectData.
 # Convert the secure input directly to a raw DPAPI blob using the same Windows API as the agent.
 $bstr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($bootstrap)
