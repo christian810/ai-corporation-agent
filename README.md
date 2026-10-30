@@ -1,3 +1,17 @@
+## Instalación sencilla con ventana (recomendada)
+
+1. En la VM, conecta Tailscale e instala Python 3.12 o posterior con Tcl/Tk y la opción Add Python to PATH.
+2. Descarga este repositorio con **Code → Download ZIP** y extrae todos los archivos.
+3. Haz doble clic en **Conectar-sucursal.cmd**. Debe estar junto a `setup_gui.py` y `agent.py`.
+4. Comprueba la dirección HTTPS del gateway (puerto 8443), escribe el nombre del equipo y pega una **clave de alta nueva** generada en Corporaciones.
+5. Pulsa **Conectar e iniciar agente**. La clave se cifra automáticamente; no edites el JSON.
+
+El asistente puede reemplazar la configuración de un alta todavía incompleta. Si ya hay un equipo dado de alta, conserva sus credenciales y no inicia otro proceso. Comprueba HTTPS y muestra errores de conexión o clave caducada sin revelar credenciales. El agente arranca en segundo plano, con inferencia desactivada. Este método no configura inicio automático después de reiniciar Windows.
+
+La prueba real en tu VM sigue pendiente. Si aparece un error, comparte únicamente su mensaje.
+
+---
+
 # AI Corporation — agente de sucursal Windows, protocolo v1
 
 Agente pequeño que consulta la sede por HTTPS. No contiene modelos ni datos de empresas. Los perfiles de coordinador, operaciones, soporte y calidad se definen en la sede y se usan al asignar trabajos. No ejecuta comandos del sistema ni lee carpetas de negocio.
