@@ -15,6 +15,16 @@ from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
 
 VERSION='1'
 
+def desktop_notice(text):
+    if os.name!='nt':raise ValueError('El aviso en pantalla requiere Windows.')
+    message=text.strip()[:500] or 'Hola EmpresaX. Mensaje enviado desde la sede central.'
+    show=ctypes.windll.user32.MessageBoxTimeoutW
+    show.argtypes=[wintypes.HWND,wintypes.LPCWSTR,wintypes.LPCWSTR,wintypes.UINT,wintypes.WORD,wintypes.DWORD]
+    show.restype=ctypes.c_int
+    result=show(None,message,'AI Corporation · Sede central',0x00010040,0,20000)
+    if result==0:raise ValueError('Windows no pudo mostrar el aviso en la sesión del agente.')
+    return 'Aviso mostrado en la sesión Windows del agente; '+('cerrado automáticamente a los 20 segundos.' if result==32000 else 'cerrado por el usuario.')
+
 class Blob(ctypes.Structure):
     _fields_=[('size',wintypes.DWORD),('data',ctypes.POINTER(ctypes.c_byte))]
 
@@ -60,6 +70,7 @@ class Worker:
     def execute(self,job):
         kind=job['kind']
         if kind=='echo':return 'Conexión y ejecución de prueba correctas. Sin inferencia de IA.'
+        if kind=='desktop_notice':return desktop_notice(job.get('prompt',''))
         if kind=='inventory':return json.dumps(metrics(self.allow_compute),ensure_ascii=False)
         if kind!='generate':raise ValueError('Tipo de trabajo no permitido.')
         if not self.allow_compute:raise ValueError('La inferencia local está desactivada en este equipo.')
