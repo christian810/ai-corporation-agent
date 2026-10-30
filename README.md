@@ -47,3 +47,30 @@ Para usar IA, instala Ollama y el modelo en la VM, revisa la carga que soporta y
 El gateway de equipos es distinto del panel: puerto local 8001, normalmente HTTPS externo 8443. El panel administrativo usa 443/8000 y no debe concederse a los equipos de empresas ajenas. La política de Tailscale o el cortafuegos debe permitir a las sucursales **solo** el gateway. Compartir una cuenta/red con acceso amplio también daría acceso a otros servicios de esa red: una credencial de agente no sustituye esas reglas de red. El piloto en tu propia VM no configura automáticamente políticas de otras empresas.
 
 El servidor no solicita ni guarda contraseñas de servidores remotos. Nunca publiques claves de alta, credenciales, `config.json`, registros o resultados en GitHub.
+
+
+## Solucionar el primer arranque en Windows
+
+Si el instalador ha indicado «Instalado», no lo repitas todavía. Ejecuta estos pasos en PowerShell dentro de la máquina virtual y con el mismo usuario de Windows que instaló el agente.
+
+1. Si aparece el indicador `>>`, pulsa **Ctrl+C** para cancelar el comando incompleto.
+2. Copia estas líneas **una por una**, conservando las comillas y las barras invertidas:
+
+```powershell
+$carpeta = Join-Path $env:LOCALAPPDATA 'AI Corporation Agent'
+Test-Path "$carpeta\config.json"
+```
+
+La segunda línea debe devolver `True`. Si devuelve `False`, detente y comprueba el usuario de Windows y la instalación; no borres ninguna configuración.
+
+3. Ejecuta la prueba de conexión y alta:
+
+```powershell
+python "$carpeta\agent.py" --config "$carpeta\config.json" --once
+```
+
+La ruta correcta termina en `Agent\config.json`, con una barra entre la carpeta y el archivo; `Agentconfig.json` no es válida. No copies el prefijo `PS C:\...>` de la consola.
+
+Si aparece «Equipo vinculado a la corporación», el alta se ha completado. Una corporación `INACTIVE` puede conectarse, pero no recibe trabajos hasta que su propietario la active en la sede. Con `--once`, el proceso termina después de una consulta: es normal.
+
+Si falla, comprueba que Tailscale esté conectado **también en la VM** y abre la dirección del gateway seguida de `/health` (puerto HTTPS 8443). Debe responder con `corporation-agent-gateway`. Comparte solo el mensaje de error: nunca claves, tokens ni el contenido de `config.json`.
