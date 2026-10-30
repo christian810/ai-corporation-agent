@@ -16,6 +16,25 @@ from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
 
 VERSION='1'
+RELEASE_VERSION='1.1.0'
+
+def agent_version():
+    try:
+        value=json.loads(Path(__file__).with_name('release-info.json').read_text(encoding='utf-8-sig'))['version']
+        import re
+        if re.fullmatch(r'[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}',value):return value
+    except Exception:pass
+    return RELEASE_VERSION
+
+def heartbeat_payload(allow_compute=False,allow_shutdown=False,directory=None):
+    status='MANUAL';enabled=False
+    if directory:
+        try:status=json.loads((directory/'update-status.json').read_text(encoding='utf-8'))['state']
+        except Exception:pass
+        try:enabled=json.loads((directory/'config.json').read_text(encoding='utf-8-sig')).get('auto_update') is True
+        except Exception:pass
+    return metrics(allow_compute)|{'heartbeat_seconds':5,'allow_shutdown':allow_shutdown,
+                                 'agent_version':agent_version(),'update_status':str(status)[:40],'auto_update':enabled}
 
 def desktop_notice(text):
     if os.name!='nt':raise ValueError('El aviso en pantalla requiere Windows.')
@@ -89,13 +108,14 @@ def commit_shutdown(api,job,config_path):
 
 class HeartbeatPump:
     """Independent of long model calls and Windows notices; no shared HTTP opener."""
-    def __init__(self,api,allow_local_http=False,allow_compute=False,allow_shutdown=False):
+    def __init__(self,api,allow_local_http=False,allow_compute=False,allow_shutdown=False,update_directory=None):
         self.api=API(api.url,api.credential,allow_local_http,timeout=4)
         self.stop=threading.Event();self.revoked=threading.Event();self.allow_compute=allow_compute;self.allow_shutdown=allow_shutdown
+        self.update_directory=update_directory
     def loop(self):
         while not self.stop.is_set():
             started=time.monotonic()
-            try:self.api('/heartbeat',metrics(self.allow_compute)|{'heartbeat_seconds':5,'allow_shutdown':self.allow_shutdown})
+            try:self.api('/heartbeat',heartbeat_payload(self.allow_compute,self.allow_shutdown,self.update_directory))
             except HTTPError as exc:
                 if exc.code in [401,403]:self.revoked.set();return
             except Exception:pass
@@ -139,7 +159,11 @@ class Worker:
 def save_json(path,value):
     temp=path.with_suffix(path.suffix+'.tmp');temp.write_text(json.dumps(value,indent=2),encoding='utf-8');temp.replace(path)
 
-def run(config_path,once=False):
+def run(config_path,once=False,ready_file=None):
+    from update_common import FileLock
+    with FileLock(config_path.parent/'worker.lock'):_run(config_path,once,ready_file)
+
+def _run(config_path,once=False,ready_file=None):
     config=json.loads(config_path.read_text(encoding='utf-8-sig'))
     if 'credential_protected' not in config:raise ValueError('Falta la credencial protegida; ejecuta install.ps1.')
     credential=protect(bytes.fromhex(config['credential_protected']),False).decode()
@@ -150,12 +174,22 @@ def run(config_path,once=False):
         save_json(config_path,config);api.credential=enrolled['token'];print('Equipo vinculado a la corporación.',flush=True)
     worker=Worker(api,config.get('allow_compute',False),config.get('allowed_models',['qwen3:8b']),config.get('allow_shutdown',False))
     spool=config_path.with_name('pending-result.dpapi')
-    with HeartbeatPump(api,config.get('allow_local_http',False),worker.allow_compute,worker.allow_shutdown) as pump:
+    with HeartbeatPump(api,config.get('allow_local_http',False),worker.allow_compute,worker.allow_shutdown,config_path.parent) as pump:
+        if ready_file:
+            save_json(ready_file,{'version':agent_version(),'ready':True})
+            permission=ready_file.with_suffix('.go')
+            deadline=time.monotonic()+30
+            while not permission.exists():
+                if time.monotonic()>deadline:raise SystemExit(2)
+                time.sleep(.1)
+            permission.unlink(missing_ok=True)
         while True:
-            if pump.revoked.is_set():raise SystemExit('Credencial revocada. Agente detenido.')
+            if pump.revoked.is_set():
+                print('Credencial revocada. Agente detenido.',flush=True);raise SystemExit(86)
+            if (config_path.parent/'update-stop').exists() and not spool.exists():raise SystemExit(75)
             success=True
             try:
-                heartbeat=api('/heartbeat',metrics(worker.allow_compute)|{'heartbeat_seconds':5,'allow_shutdown':worker.allow_shutdown})
+                heartbeat=api('/heartbeat',heartbeat_payload(worker.allow_compute,worker.allow_shutdown,config_path.parent))
                 if spool.exists():
                     pending=json.loads(protect(spool.read_bytes(),False).decode())
                     try:api('/jobs/'+str(pending['job_id'])+'/result',pending['body']);spool.unlink()
@@ -164,6 +198,7 @@ def run(config_path,once=False):
                             spool.replace(spool.with_name('undelivered-'+str(time.time_ns())+'.dpapi'))
                             print('Resultado fuera de plazo conservado cifrado para revisión.',flush=True)
                         else:raise
+                if (config_path.parent/'update-stop').exists() and not spool.exists():raise SystemExit(75)
                 if not spool.exists():
                     leased=api('/lease')
                     if leased.get('job'):
@@ -176,7 +211,8 @@ def run(config_path,once=False):
             except HTTPError as exc:
                 success=False
                 print('La sede rechazó la operación: HTTP '+str(exc.code),flush=True)
-                if exc.code in [401,403]:raise SystemExit('Credencial revocada o no válida. Requiere intervención del propietario.') from None
+                if exc.code in [401,403]:
+                    print('Credencial revocada o no válida. Requiere intervención del propietario.',flush=True);raise SystemExit(86) from None
             except Exception:
                 success=False
                 print('Sede temporalmente no disponible; se conserva el resultado pendiente.',flush=True)
@@ -186,9 +222,9 @@ def run(config_path,once=False):
             time.sleep(max(15,min(300,int(config.get('poll_seconds',30)))))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,required=True);parser.add_argument('--once',action='store_true')
+    parser=argparse.ArgumentParser();parser.add_argument('--config',type=Path,required=True);parser.add_argument('--once',action='store_true');parser.add_argument('--ready-file',type=Path)
     args=parser.parse_args()
-    try:run(args.config.resolve(),args.once)
+    try:run(args.config.resolve(),args.once,args.ready_file)
     except KeyboardInterrupt:pass
     except Exception:
         print('No se pudo iniciar el agente. Revisa el archivo de configuración y el gateway; no se han mostrado credenciales.',file=sys.stderr)

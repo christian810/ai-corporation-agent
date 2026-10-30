@@ -8,3 +8,13 @@ central-pending.json
 central-last-result.json
 
 power-consumed.json
+
+*.lock
+update-state.json
+update-status.json
+update-stop
+supervisor-stop
+ready-*.json
+ready-*.go
+versions/
+register-startup.ps1

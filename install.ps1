@@ -22,6 +22,7 @@ New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
 $configPath=Join-Path $installRoot 'config.json'
 if (Test-Path -LiteralPath $configPath) { throw 'Ya existe una instalación. Conserva su configuración; no se sobrescribe la credencial.' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'agent.py') -Destination (Join-Path $installRoot 'agent.py')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'update_common.py') -Destination (Join-Path $installRoot 'update_common.py')
 $bootstrap=Read-Host 'Clave de alta de un solo uso (no el token de Telegram)' -AsSecureString
 $config=@{central_url=$CentralUrl.TrimEnd('/');label=$Label;credential_protected='';enrolled=$false;allow_compute=[bool]$AllowCompute;allowed_models=@('qwen3:8b');poll_seconds=30}
 # ConvertFrom-SecureString uses Windows DPAPI but its envelope differs from raw CryptProtectData.

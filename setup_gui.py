@@ -88,6 +88,7 @@ def main():
                 target = install_root / 'agent.py'
                 if source.resolve() != target.resolve():
                     shutil.copy2(source, target)
+                    shutil.copy2(source.with_name('update_common.py'),install_root/'update_common.py')
                 result = api('/enroll', {'key': key, 'label': label, 'version': VERSION})
                 enrolled = True
                 config = dict(central_url=api.url, label=label, enrolled=True,
